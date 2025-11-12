@@ -1,8 +1,5 @@
-Here’s a complete, professional README draft for your project — including an overview, architecture, setup instructions, and detailed guidance on how to design a high-quality Hindi → Mandarin legal document summarization and translation pipeline.
 
-⸻
-
-🏛️ Legal Document Summarization & Translation (Hindi → Mandarin Chinese)
+# Legal Document Summarization & Translation (Hindi → Mandarin Chinese)
 
 📘 Overview
 
