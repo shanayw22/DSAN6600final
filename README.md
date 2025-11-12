@@ -12,6 +12,7 @@ The system performs three main functions:
 	3.	Translation — Translates the summary (or full text) from Hindi to Mandarin Chinese with consistent terminology and formal legal register.
 
 ⸻
+
 🧩 System Architecture
 ```
 +------------------+
