@@ -1,0 +1,4 @@
+use this link https://opus.nlpl.eu/results/hi&zh/corpus-result-table
+
+store data in data/hi-zh.txt
+
