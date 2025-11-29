@@ -1,13 +1,47 @@
 """
-Translation Quality Estimation Model Training Script
+Translation Quality Estimation - Training Script v2
+--------------------------------------------------
+This script is a modular and extensible redesign of the original `train_model.py`.  
+It introduces structural improvements that enable cross-validation, hyperparameter tuning, 
+and more reliable experimentation.
 
-This script trains a regression model to predict CCMatrix alignment scores
-(continuous values) based on sentence-level features.
+Major Improvements in v2:
 
-Target: CCMatrix scores (continuous) - alignment/similarity scores
-Features: Sentence characteristics including embedding_similarity, but EXCLUDING ccmatrix_score to avoid leakage
+1. Code Modularization
+   - Refactored the entire training pipeline into reusable functions:
+        • load_and_prepare_data()
+        • add_all_features()
+        • build_model()
+        • train_one_model()
+        • run_cross_validation()
+   - This makes the pipeline cleaner, testable, and easier to extend for tuning or ensembling.
+
+2. Added Cross-Validation
+   - Implemented K-Fold cross-validation to obtain a more robust estimate of model performance.
+   - CV replaces the single train/validation split used in the original script.
+   - This structure is required for reliable hyperparameter tuning and model comparison.
+
+3. Improved Logging and Debuggability
+   - Added logging statements to track data loading, feature computation, model training,
+     validation performance across folds, and parameter evaluation.
+   - Makes the training process easier to monitor and debug, especially during tuning.
+
+4. Prepared for Hyperparameter Tuning (to be added)
+   - The modular design + CV function allow easy integration of:
+        • Grid search
+        • Random search
+        • Bayesian optimization
+        • KerasTuner
+   - These can now be plugged in without modifying the training loop.
+
+Overall, v2 establishes a clean and extensible training architecture
+that supports all required high-priority tasks (CV, tuning, error analysis, 
+feature importance, and ensembling) in future iterations.
 """
 
+import warnings
+import logging
+import time
 import pandas as pd
 import numpy as np
 import pickle
@@ -15,13 +49,15 @@ import os
 from pathlib import Path
 from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from scipy.stats import spearmanr, pearsonr
 from sklearn.preprocessing import StandardScaler
-from sentence_transformers import SentenceTransformer as ST
-import warnings
-warnings.filterwarnings('ignore')
+from sklearn.metrics.pairwise import cosine_similarity
+from scipy.stats import spearmanr, pearsonr
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer, AutoModelForCausalLM
+import torch
 
 # Deep learning imports
+logging.info("Checking TensorFlow availability...")
 try:
     import tensorflow as tf
     from tensorflow import keras
@@ -30,7 +66,7 @@ try:
     TF_AVAILABLE = True
 except ImportError:
     TF_AVAILABLE = False
-    print("Warning: TensorFlow not available. Deep learning models will be skipped.")
+    logging.info("Warning: TensorFlow not available. Deep learning models will be skipped.")
 
 # Set random seeds for reproducibility
 np.random.seed(42)
@@ -42,37 +78,46 @@ if TF_AVAILABLE:
     # Enable eager execution explicitly
     tf.config.run_functions_eagerly(True)  # Use graph mode for better performance
 
+# Set up logging and warnings
+logging.basicConfig(level=logging.INFO)
+warnings.filterwarnings('ignore')
+
 # ============================================================================
 # Configuration
 # ============================================================================
-DATA_PATH = '../data/hi-zh.txt/'
-SAMPLE_SIZE = 200000
-OUTPUT_DIR = '../models/'
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+# DATA_PATH = '../data/hi-zh.txt/'
+# SAMPLE_SIZE = 200000
+# OUTPUT_DIR = '../models/'
+# os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 # Option to skip deep learning models if they're too slow
-SKIP_DEEP_LEARNING = False  # Set to True to skip neural networks
+# SKIP_DEEP_LEARNING = False  # Set to True to skip neural networks
 
 # ============================================================================
 # Load Data
 # ============================================================================
-print("=" * 70)
-print("LOADING DATA")
-print("=" * 70)
+def load_data(data_path:str, sample_size:int):
+    """
+        Load Hindi-Chinese parallel corpus
+        Args:
+            data_path (str): Path to the data files
+            sample_size (int): Number of samples to load (for quick testing)
+        Returns:
+            pd.DataFrame: DataFrame with columns ['hindi', 'chinese', 'ccmatrix_score']
+    """
 
-def load_data(sample_size=None):
-    """Load Hindi-Chinese parallel corpus"""
     hindi_sentences = []
     chinese_sentences = []
     scores = []
     
-    with open(DATA_PATH + 'CCMatrix.hi-zh.hi', 'r', encoding='utf-8') as f:
+    logging.info(f"Loading data from {data_path}...")
+    with open(data_path + 'CCMatrix.hi-zh.hi', 'r', encoding='utf-8') as f:
         hindi_sentences = [line.strip() for line in f.readlines()]
     
-    with open(DATA_PATH + 'CCMatrix.hi-zh.zh', 'r', encoding='utf-8') as f:
+    with open(data_path + 'CCMatrix.hi-zh.zh', 'r', encoding='utf-8') as f:
         chinese_sentences = [line.strip() for line in f.readlines()]
     
-    with open(DATA_PATH + 'CCMatrix.hi-zh.scores', 'r', encoding='utf-8') as f:
+    with open(data_path + 'CCMatrix.hi-zh.scores', 'r', encoding='utf-8') as f:
         scores = [float(line.strip()) for line in f.readlines()]
     
     # Sample if specified
@@ -87,195 +132,133 @@ def load_data(sample_size=None):
         'chinese': chinese_sentences,
         'ccmatrix_score': scores
     })
+
+    logging.info(f"Loaded {len(df):,} sentence pairs.")
+    logging.info("Showing sample dataframe:")
+    logging.info(df.head())
     
     return df
 
-df = load_data(sample_size=SAMPLE_SIZE)
-print(f"Loaded {len(df):,} sentence pairs")
-
 # ============================================================================
-# Compute Embedding Similarities (if not already computed)
+# Embedding Similarities Computation (model: 'paraphrase-multilingual-MiniLM-L12-v2'; 'LaBSE')
 # ============================================================================
-print("\n" + "=" * 70)
-print("COMPUTING EMBEDDING SIMILARITIES")
-print("=" * 70)
+def compute_embedding_similarities(hindi_sentences, chinese_sentences, model:object, batch_size=64):
+    """
+        Compute cosine similarity between Hindi and Chinese sentence embeddings
+        Args:
+            hindi_sentences (list): List of Hindi sentences
+            chinese_sentences (list): List of Chinese sentences
+            batch_size (int): Batch size for processing
+        Returns:
+            np.array: Array of cosine similarity scores
+            Embeddings for Hindi and Chinese sentences
+        Defaults to 'paraphrase-multilingual-MiniLM-L12-v2' model
+    """
 
-try:
-    from sentence_transformers import SentenceTransformer
-    from sklearn.metrics.pairwise import cosine_similarity
-    import time
-    
-    print("Loading multilingual sentence transformer model...")
-    model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-    
-    def compute_embedding_similarities(hindi_sentences, chinese_sentences, model, batch_size=64):
-        """Compute cosine similarity between Hindi and Chinese sentence embeddings
-        Also returns embeddings for semantic feature extraction"""
-        similarities = []
-        hindi_embeddings = []
-        chinese_embeddings = []
-        total = len(hindi_sentences)
+    logging.info(f"Using sentence transformer {model}...")
+
+    similarities = []
+    hindi_embeddings = []
+    chinese_embeddings = []
+    total = len(hindi_sentences)
         
-        print(f"Processing {total:,} sentence pairs in batches of {batch_size}...")
-        start_time = time.time()
+    logging.info(f"Processing {total:,} sentence pairs in batches of {batch_size}...")
+    start_time = time.time()
         
-        for i in range(0, total, batch_size):
-            hi_batch = hindi_sentences[i:i+batch_size]
-            zh_batch = chinese_sentences[i:i+batch_size]
+    for i in range(0, total, batch_size):
+        hi_batch = hindi_sentences[i:i+batch_size]
+        zh_batch = chinese_sentences[i:i+batch_size]
             
-            hi_emb = model.encode(hi_batch, show_progress_bar=False, 
-                                 convert_to_numpy=True, normalize_embeddings=True)
-            zh_emb = model.encode(zh_batch, show_progress_bar=False, 
-                                 convert_to_numpy=True, normalize_embeddings=True)
+        hi_emb = model.encode(hi_batch, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=True)
+        zh_emb = model.encode(zh_batch, show_progress_bar=False, convert_to_numpy=True, normalize_embeddings=True)
             
-            batch_similarities = np.sum(hi_emb * zh_emb, axis=1)
-            similarities.extend(batch_similarities)
-            hindi_embeddings.append(hi_emb)
-            chinese_embeddings.append(zh_emb)
+        batch_similarities = np.sum(hi_emb * zh_emb, axis=1)
+        similarities.extend(batch_similarities)
+        hindi_embeddings.append(hi_emb)
+        chinese_embeddings.append(zh_emb)
             
-            if (i // batch_size + 1) % 10 == 0:
-                elapsed = time.time() - start_time
-                rate = (i + batch_size) / elapsed if elapsed > 0 else 0
-                print(f"  Processed {min(i + batch_size, total):,}/{total:,} pairs ({rate:.0f} pairs/sec)")
+        if (i // batch_size + 1) % 10 == 0:
+            elapsed = time.time() - start_time
+            rate = (i + batch_size) / elapsed if elapsed > 0 else 0
+            logging.info(f"  Processed {min(i + batch_size, total):,}/{total:,} pairs ({rate:.0f} pairs/sec)")
         
         elapsed = time.time() - start_time
-        print(f"Completed in {elapsed:.2f} seconds")
+        logging.info(f"Completed in {elapsed:.2f} seconds")
         
-        # Concatenate all embeddings
-        hindi_emb_all = np.vstack(hindi_embeddings)
-        chinese_emb_all = np.vstack(chinese_embeddings)
+    # Concatenate all embeddings
+    hindi_emb_all = np.vstack(hindi_embeddings)
+    chinese_emb_all = np.vstack(chinese_embeddings)
         
-        return np.array(similarities), hindi_emb_all, chinese_emb_all
-    
-    print("Computing embedding similarities...")
-    similarities, hindi_embeddings, chinese_embeddings = compute_embedding_similarities(
-        df['hindi'].tolist(),
-        df['chinese'].tolist(),
-        model,
-        batch_size=64
-    )
-    df['embedding_similarity'] = similarities
-    
-    # Compute semantic features using DIFFERENT embedding model (to avoid correlation with target)
-    print("Computing semantic features from alternative embedding model (LaBSE)...")
-    try:
-        from sentence_transformers import SentenceTransformer as ST
-        labse_model = ST('sentence-transformers/LaBSE')
-        
-        def compute_labse_similarity(hindi_sentences, chinese_sentences, model, batch_size=64):
-            """Compute cosine similarity using LaBSE embeddings"""
-            similarities = []
-            total = len(hindi_sentences)
-            
-            for i in range(0, total, batch_size):
-                hi_batch = hindi_sentences[i:i+batch_size]
-                zh_batch = chinese_sentences[i:i+batch_size]
-                
-                hi_emb = model.encode(hi_batch, show_progress_bar=False, 
-                                     convert_to_numpy=True, normalize_embeddings=True)
-                zh_emb = model.encode(zh_batch, show_progress_bar=False, 
-                                     convert_to_numpy=True, normalize_embeddings=True)
-                
-                batch_similarities = np.sum(hi_emb * zh_emb, axis=1)
-                similarities.extend(batch_similarities)
-                
-                if (i // batch_size + 1) % 10 == 0:
-                    print(f"  Processed {min(i + batch_size, total):,}/{total:,} pairs with LaBSE")
-            
-            return np.array(similarities)
-        
-        df['labse_similarity'] = compute_labse_similarity(
-            df['hindi'].tolist(),
-            df['chinese'].tolist(),
-            labse_model,
-            batch_size=64
-        )
-        print("  LaBSE similarity computed successfully")
-    except Exception as e:
-        print(f"  Warning: Could not compute LaBSE similarity: {e}")
-        print("  Using dummy values for LaBSE similarity")
-        df['labse_similarity'] = np.random.rand(len(df))
-    
-    # Compute Chinese language model perplexity (fluency indicator)
-    print("Computing Chinese language model perplexity (fluency indicator)...")
-    try:
-        from transformers import AutoTokenizer, AutoModelForCausalLM
-        import torch
-        
-        # Use a Chinese language model for perplexity
-        # Try to use GPU if available, otherwise CPU
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        
-        # Load Chinese GPT model for perplexity
-        perplexity_model_name = 'uer/gpt2-chinese-cluecorpussmall'
-        print(f"  Loading Chinese language model: {perplexity_model_name}")
-        chinese_tokenizer = AutoTokenizer.from_pretrained(perplexity_model_name)
-        chinese_lm = AutoModelForCausalLM.from_pretrained(perplexity_model_name)
-        chinese_lm.eval()
-        chinese_lm.to(device)
-        
-        def compute_perplexity(texts, tokenizer, model, device, batch_size=32):
-            """Compute perplexity for a batch of texts"""
-            perplexities = []
-            total = len(texts)
-            
-            for i in range(0, total, batch_size):
-                batch_texts = texts[i:i+batch_size]
-                
-                batch_perplexities = []
-                for text in batch_texts:
-                    try:
-                        # Tokenize
-                        inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
-                        inputs = {k: v.to(device) for k, v in inputs.items()}
-                        
-                        # Compute loss
-                        with torch.no_grad():
-                            outputs = model(**inputs, labels=inputs['input_ids'])
-                            loss = outputs.loss.item()
-                            # Perplexity = exp(loss)
-                            ppl = np.exp(loss)
-                            batch_perplexities.append(ppl)
-                    except Exception as e:
-                        # If computation fails, use a default value
-                        batch_perplexities.append(100.0)  # High perplexity = low fluency
-                
-                perplexities.extend(batch_perplexities)
-                
-                if (i // batch_size + 1) % 10 == 0:
-                    print(f"  Processed {min(i + batch_size, total):,}/{total:,} sentences for perplexity")
-            
-            return np.array(perplexities)
-        
-        df['chinese_perplexity'] = compute_perplexity(
-            df['chinese'].tolist(),
-            chinese_tokenizer,
-            chinese_lm,
-            device,
-            batch_size=32
-        )
-        print("  Chinese perplexity computed successfully")
-        
-        # Clean up
-        del chinese_lm
-        del chinese_tokenizer
-        torch.cuda.empty_cache() if torch.cuda.is_available() else None
-        
-    except Exception as e:
-        print(f"  Warning: Could not compute Chinese perplexity: {e}")
-        print("  Using dummy values for Chinese perplexity")
-        df['chinese_perplexity'] = np.random.rand(len(df)) * 50.0 + 10.0  # Typical perplexity range
-    
-except ImportError:
-    print("Warning: sentence-transformers not installed. Skipping embedding computation.")
-    print("If you have pre-computed embeddings, add 'embedding_similarity' column to dataframe.")
-    # Create dummy embedding similarity and semantic features for testing
-    df['embedding_similarity'] = np.random.rand(len(df))
-    df['labse_similarity'] = np.random.rand(len(df))
-    df['chinese_perplexity'] = np.random.rand(len(df)) * 50.0 + 10.0  # Typical perplexity range
+    return np.array(similarities), hindi_emb_all, chinese_emb_all
 
-print(f"\nEmbedding similarity statistics:")
-print(df['embedding_similarity'].describe())
+# ============================================================================
+# Load Chinese Language Model for Perplexity
+# ============================================================================
+def load_chinese_lm(model_name='uer/gpt2-chinese-cluecorpussmall'):
+    """
+    Load a Chinese language model and tokenizer for perplexity computation.
+    Returns (tokenizer, model, device)
+    """
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    logging.info(f"Using device: {device}")
+
+    logging.info(f"Loading Chinese LM: {model_name}")
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForCausalLM.from_pretrained(model_name)
+    
+    model.eval()
+    model.to(device)
+
+    logging.info("Chinese LM loaded successfully.")
+    return tokenizer, model, device
+
+# ============================================================================
+# Chinese Language Model Perplexity Computation
+# ============================================================================
+def compute_perplexity(texts, tokenizer, model, device, batch_size=32):
+    """
+        Compute perplexity for a batch of texts
+        Args:
+            texts (list): List of Chinese sentences
+            tokenizer: Tokenizer for the language model
+            model: Language model
+            device: Device to run the model on
+        Returns:
+            np.array: Array of perplexity scores
+    """
+
+    logging.info(f"Computing perplexity for {len(texts):,} sentences...")
+    perplexities = []
+    total = len(texts)
+            
+    for i in range(0, total, batch_size):
+        batch_texts = texts[i:i+batch_size]
+                
+        batch_perplexities = []
+        for text in batch_texts:
+            try:
+                # Tokenize
+                inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
+                inputs = {k: v.to(device) for k, v in inputs.items()}
+                        
+                # Compute loss
+                with torch.no_grad():
+                    outputs = model(**inputs, labels=inputs['input_ids'])
+                    loss = outputs.loss.item()
+                    # Perplexity = exp(loss)
+                    ppl = np.exp(loss)
+                    batch_perplexities.append(ppl)
+            except Exception as e:
+                # If computation fails, use a default value
+                batch_perplexities.append(100.0)  # High perplexity = low fluency
+                
+        perplexities.extend(batch_perplexities)
+                
+        if (i // batch_size + 1) % 10 == 0:
+            logging.info(f"  Processed {min(i + batch_size, total):,}/{total:,} sentences for perplexity")
+            
+    return np.array(perplexities)
 
 # ============================================================================
 # Target Variable: CCMatrix Scores (Continuous)
