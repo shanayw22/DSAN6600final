@@ -21,13 +21,31 @@ try:
     import tensorflow as tf
     from tensorflow import keras
     TF_AVAILABLE = True
+    # Import loss and metric classes for custom_objects
+    from tensorflow.keras.losses import MeanSquaredError
+    from tensorflow.keras.metrics import MeanAbsoluteError
 except ImportError:
     TF_AVAILABLE = False
+    MeanSquaredError = None
+    MeanAbsoluteError = None
 
 # ============================================================================
 # Configuration
 # ============================================================================
-MODELS_DIR = '../models/'
+# MODELS_DIR will be set based on current working directory
+# Try relative path first, then absolute
+import os
+if os.path.exists('models/'):
+    MODELS_DIR = 'models/'
+elif os.path.exists('../models/'):
+    MODELS_DIR = '../models/'
+else:
+    # Try to find models directory
+    current_dir = os.getcwd()
+    if 'scripts' in current_dir:
+        MODELS_DIR = '../models/'
+    else:
+        MODELS_DIR = 'models/'
 
 # ============================================================================
 # Feature Extraction Functions (same as training)
@@ -187,7 +205,95 @@ def load_model_and_artifacts():
     if model_file.endswith('.h5'):
         if not TF_AVAILABLE:
             raise ImportError("TensorFlow required to load .h5 model. Install with: pip install tensorflow")
-        model = keras.models.load_model(model_path)
+        # The issue: Keras tries to deserialize loss/metric during load, even with compile=False
+        # Solution: Apply monkey-patch FIRST, then load model architecture and weights separately
+        import h5py
+        import json
+        
+        # CRITICAL: Apply monkey-patch BEFORE any Keras operations
+        # This fixes the bug where Keras looks for 'mse' in keras.metrics instead of keras.losses
+        import keras.metrics as km
+        import keras.losses as kl
+        original_km_mse = getattr(km, 'mse', None)
+        original_kl_mse = getattr(kl, 'mse', None)
+        
+        # Add mse to metrics (Keras bug looks in wrong place)
+        km.mse = tf.keras.losses.mean_squared_error
+        if not hasattr(kl, 'mse'):
+            kl.mse = tf.keras.losses.mean_squared_error
+        
+        # Also patch serialization registry if available
+        try:
+            from keras.src.saving import serialization_lib
+            if hasattr(serialization_lib, '_GLOBAL_CUSTOM_OBJECTS'):
+                serialization_lib._GLOBAL_CUSTOM_OBJECTS['mse'] = tf.keras.losses.mean_squared_error
+        except:
+            pass
+        
+        try:
+            # Try loading from separate architecture + weights files first (new format)
+            model_name_base = model_file.replace('quality_estimation_', '').replace('.h5', '')
+            architecture_path = os.path.join(MODELS_DIR, f'quality_estimation_{model_name_base}_architecture.json')
+            weights_path = os.path.join(MODELS_DIR, f'quality_estimation_{model_name_base}.weights.h5')
+            
+            if os.path.exists(architecture_path) and os.path.exists(weights_path):
+                # Load architecture from JSON
+                with open(architecture_path, 'r') as f:
+                    model_config = f.read()
+                model = tf.keras.models.model_from_json(model_config)
+                
+                # Load weights
+                model.load_weights(weights_path)
+                
+                # Compile with the same settings used during training
+                model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+                print(f"    ✓ Loaded model from architecture + weights files")
+            else:
+                # Fallback: Try loading from H5 file by extracting config
+                # Open H5 file and extract model config
+                with h5py.File(model_path, 'r') as f:
+                    if 'model_config' in f.attrs:
+                        model_config_json = f.attrs['model_config']
+                        if isinstance(model_config_json, bytes):
+                            model_config_json = model_config_json.decode('utf-8')
+                        model_config = json.loads(model_config_json)
+                    else:
+                        raise ValueError("Model config not found in H5 file")
+                
+                # Reconstruct model from config (this bypasses loss/metric deserialization)
+                model = tf.keras.models.model_from_json(model_config)
+                
+                # Load weights separately
+                model.load_weights(model_path, by_name=False, skip_mismatch=False)
+                
+                # Compile with the same settings used during training
+                model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+                print(f"    ✓ Loaded model from H5 file (extracted config)")
+                
+        except Exception as e:
+            # Restore original state on error
+            if original_km_mse is not None:
+                km.mse = original_km_mse
+            elif hasattr(km, 'mse'):
+                delattr(km, 'mse')
+            if original_kl_mse is not None:
+                kl.mse = original_kl_mse
+            elif hasattr(kl, 'mse') and kl.mse == tf.keras.losses.mean_squared_error:
+                delattr(kl, 'mse')
+            
+            raise RuntimeError(
+                f"Could not load model:\n"
+                f"Error: {e}\n\n"
+                f"SOLUTION: Please retrain the model. The new training will save models in a compatible format."
+            )
+        finally:
+            # Clean up monkey-patch (optional - we can leave it for future loads)
+            # Uncomment if you want to restore original state
+            # if original_km_mse is not None:
+            #     km.mse = original_km_mse
+            # elif hasattr(km, 'mse'):
+            #     delattr(km, 'mse')
+            pass
         model_type = 'keras'
     else:
         with open(model_path, 'rb') as f:
