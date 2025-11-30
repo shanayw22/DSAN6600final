@@ -218,15 +218,22 @@ def load_model_and_artifacts():
         original_kl_mse = getattr(kl, 'mse', None)
         
         # Add mse to metrics (Keras bug looks in wrong place)
-        km.mse = tf.keras.losses.mean_squared_error
+        # Use the actual MSE loss function
+        # In TensorFlow/Keras, we can use the class or create a function
+        mse_function = tf.keras.losses.MeanSquaredError()
+        # Also create a simple function version
+        def mse_loss_fn(y_true, y_pred):
+            return tf.reduce_mean(tf.square(y_true - y_pred))
+        
+        km.mse = mse_loss_fn
         if not hasattr(kl, 'mse'):
-            kl.mse = tf.keras.losses.mean_squared_error
+            kl.mse = mse_loss_fn
         
         # Also patch serialization registry if available
         try:
             from keras.src.saving import serialization_lib
             if hasattr(serialization_lib, '_GLOBAL_CUSTOM_OBJECTS'):
-                serialization_lib._GLOBAL_CUSTOM_OBJECTS['mse'] = tf.keras.losses.mean_squared_error
+                serialization_lib._GLOBAL_CUSTOM_OBJECTS['mse'] = mse_loss_fn
         except:
             pass
         
