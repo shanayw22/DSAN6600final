@@ -158,7 +158,7 @@ def compute_embedding_similarities(hindi_sentences, chinese_sentences, model_nam
 
     from sentence_transformers import SentenceTransformer
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
     logging.info(f"Embedding model running on device: {device}")
 
     model = SentenceTransformer(model_name, device=device)
@@ -210,7 +210,7 @@ def load_chinese_lm(model_name='uer/gpt2-chinese-cluecorpussmall'):
 
     from transformers import AutoTokenizer, AutoModelForCausalLM
     
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = "mps" if torch.backends.mps.is_available() else "cpu"
     logging.info(f"Using device: {device}")
 
     logging.info(f"Loading Chinese LM: {model_name}")
