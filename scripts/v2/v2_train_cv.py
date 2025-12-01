@@ -1,0 +1,334 @@
+"""
+v2_train_cv.py
+----------------------------------------------------
+Cross-Validation + Hyperparameter Search module.
+
+This script:
+  Loads feature-engineered tabular data (CSV)
+  Uses v2_models.py to construct models
+  Runs K-Fold CV to evaluate model performance
+    - Uses v2_models.py to construct models
+    - scales data using StandardScaler
+  Performs hyperparameter optimization
+  Show results on test dataset with best hyperparameters
+
+This module DOES NOT train the final model.
+Use v2_train_single.py for final training.
+----------------------------------------------------
+"""
+
+import os
+import json
+import argparse
+import logging
+import numpy as np
+import pandas as pd
+import warnings
+from sklearn.model_selection import KFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, mean_absolute_error
+from v2_models import get_model_builder
+
+# Set up logging and warnings
+logging.basicConfig(level=logging.INFO)
+warnings.filterwarnings('ignore')
+
+# ============================================================
+# Load csv file
+# ============================================================
+def load_tabular_dataset(csv_path: str, sample: bool, n_samples: int = 1000000):
+    """
+    Load feature-engineered tabular dataset from CSV.
+    Args:
+        csv_path (str): path to feature-engineered
+        sample (bool): whether to sample a subset for quicker runs
+        n_samples (int): number of samples if sampling
+    Returns:
+        X (np.ndarray): feature matrix
+        y (np.ndarray): target array
+    """
+
+    logging.info(f"Loading feature-engineered CSV: {csv_path}")
+
+    df = pd.read_csv(csv_path)
+
+    if sample:
+        logging.info(f"Sampling {n_samples} rows for quicker runs...")
+        df = df.sample(n=n_samples, random_state=42).reset_index(drop=True)
+
+    feature_cols = [col for col in df.columns if col != "ccmatrix_score"]
+
+    X = df[feature_cols].values
+    y = df["ccmatrix_score"].values
+
+    logging.info(f"Loaded {X.shape[0]:,} samples with {X.shape[1]} features.")
+
+    return X, y
+
+# ============================================================
+# Split train / test
+# ============================================================
+# def split_test_data(X, y, test_size=0.2, random_state=42):
+#     """
+#     Split dataset into train and test sets.
+
+#     Args:
+#         X (np.ndarray): feature matrix
+#         y (np.ndarray): target array
+#         test_size (float): proportion for test set
+#         random_state (int): random seed
+#     Returns:
+#         X_train, X_test, y_train, y_test
+#     """
+
+#     logging.info(f"Splitting data into train/test with test_size={test_size}...")
+
+#     X_train, X_test, y_train, y_test = train_test_split(
+#         X, y, test_size=test_size, random_state=random_state
+#     )
+
+#     logging.info(f"Train samples: {X_train.shape[0]:,}, Test samples: {X_test.shape[0]:,}")
+
+#     return X_train, X_test, y_train, y_test
+
+# ============================================================
+# K-Fold Cross Validation
+# ============================================================
+def run_kfold_cv(X, y, model_fn, hyperparams, k=5, random_state=42):
+    """
+    Run K-Fold cross-validation for a given model & hyperparameters.
+    Scaling is performed per-fold to prevent data leakage.
+    """
+
+    logging.info(f"Running {k}-Fold CV for hyperparams: {hyperparams}")
+
+    kf = KFold(n_splits=k, shuffle=True, random_state=random_state)
+
+    fold_rmses = []
+    fold_maes = []
+
+    for fold_idx, (train_idx, val_idx) in enumerate(kf.split(X)):
+        logging.info(f"  Fold {fold_idx + 1}/{k}")
+
+        # Split
+        X_train, X_val = X[train_idx], X[val_idx]
+        y_train, y_val = y[train_idx], y[val_idx]
+
+        # Per-fold scaling 
+        feature_scaler = StandardScaler()
+        X_train_scaled = feature_scaler.fit_transform(X_train)
+        X_val_scaled = feature_scaler.transform(X_val)
+
+        target_scaler = StandardScaler()
+        y_train_scaled = target_scaler.fit_transform(y_train.reshape(-1, 1)).flatten()
+        y_val_scaled = target_scaler.transform(y_val.reshape(-1, 1)).flatten()
+    
+        # Build model for this fold
+        input_dim = X_train.shape[1]
+        model = model_fn(input_dim=input_dim, **hyperparams)
+
+        # Train
+        model.fit(
+            X_train_scaled, y_train_scaled,
+            epochs=40,
+            batch_size=128,
+            validation_data=(X_val_scaled, y_val_scaled),
+            verbose=0
+        )
+
+        # Predict
+        val_pred_scaled = model.predict(X_val_scaled).reshape(-1)
+
+        # Unscale predictions
+        val_pred = target_scaler.inverse_transform(
+            val_pred_scaled.reshape(-1, 1)
+        ).flatten()
+
+        rmse = np.sqrt(mean_squared_error(y_val, val_pred))
+        mae = mean_absolute_error(y_val, val_pred)
+
+        fold_rmses.append(rmse)
+        fold_maes.append(mae)
+
+        logging.info(f"Fold RMSE={rmse:.4f}, MAE={mae:.4f}")
+
+    avg_rmse = np.mean(fold_rmses)
+    avg_mae = np.mean(fold_maes)
+
+    logging.info(f"→ CV Results: Avg RMSE={avg_rmse:.4f}, Avg MAE={avg_mae:.4f}")
+
+    return avg_rmse, avg_mae
+
+
+# ============================================================
+# Hyperparameter Search
+# ============================================================
+def hyperparameter_search(X, y, model_type, search_space, k=5):
+    """
+    Grid Search over hyperparameter combinations.
+    """
+
+    logging.info(f"=== Starting Hyperparameter Search for {model_type} ===")
+
+    # Get model constructor, but still needs input_dim later
+    raw_model_fn = get_model_builder(model_type)
+    input_dim = X.shape[1]
+
+    best_params = None
+    best_score = 1e9
+
+    import itertools
+    keys = list(search_space.keys())
+    values = list(search_space.values())
+
+    for combination in itertools.product(*values):
+        params = dict(zip(keys, combination))
+        logging.info(f"\nEvaluating params: {params}")
+
+        # Wrap model_fn to inject input_dim automatically
+        model_fn = lambda input_dim=input_dim, **hp: raw_model_fn(input_dim, **hp)
+
+        avg_rmse, _ = run_kfold_cv(
+            X=X,
+            y=y,
+            model_fn=model_fn,
+            hyperparams=params,
+            k=k
+        )
+
+        if avg_rmse < best_score:
+            best_score = avg_rmse
+            best_params = params
+            logging.info(f"New best params found! RMSE={best_score:.4f}")
+
+    return best_params, best_score
+
+# ============================================================
+# test dataset evaluation for optimal hyperparameters
+# ============================================================
+def evaluate_on_test_data(X_test, y_test, model, feature_scaler, target_scaler=None):
+    """
+    Evaluate the trained final model on the test dataset.
+    
+    IMPORTANT:
+    - feature_scaler must come from TrainVal
+    - target_scaler must come from TrainVal (if used)
+    """
+
+    logging.info("Evaluating on test dataset...")
+
+    # Scale test data using TRAINED scalers
+    X_test_scaled = feature_scaler.transform(X_test)
+
+    # Predict (scaled)
+    test_pred_scaled = model.predict(X_test_scaled).reshape(-1)
+
+    # Unscale predictions if target was scaled
+    if target_scaler is not None:
+        test_pred = target_scaler.inverse_transform(
+            test_pred_scaled.reshape(-1, 1)
+        ).flatten()
+    else:
+        test_pred = test_pred_scaled
+
+    # Compute metrics in ORIGINAL scale
+    rmse = np.sqrt(mean_squared_error(y_test, test_pred))
+    mae = mean_absolute_error(y_test, test_pred)
+    r2 = r2_score(y_test, test_pred)
+
+    logging.info(f"Test RMSE={rmse:.4f}, MAE={mae:.4f}, R²={r2:.4f}")
+
+    return rmse, mae, r2
+
+
+# ============================================================
+# main
+# ============================================================
+def main():
+    parser = argparse.ArgumentParser(description="Run K-Fold CV for TQE models")
+    parser.add_argument("--csv", type=str, required=True, help="Path to feature-engineered CSV file")
+    parser.add_argument("--model", type=str, default="mlp", choices=["mlp", "residual_mlp", "transformer"], help="Which model type to evaluate")
+    parser.add_argument("--sample", action="store_true", help="Use sampling to speed up CV")
+    parser.add_argument("--n_samples", type=int, default=1000000, help="If sampling, number of rows to sample")
+    parser.add_argument("--kfolds", type=int, default=5, help="Number of CV folds")
+    parser.add_argument("--output", type=str, default="cv_results", help="Directory to save CV and test results")
+    args = parser.parse_args()
+    os.makedirs(args.output, exist_ok=True)
+
+    # ============================================================
+    # Load dataset
+    # ============================================================
+    logging.info("Loading dataset...")
+    X_raw, y_raw = load_tabular_dataset(
+        csv_path=args.csv,
+        sample=args.sample,
+        n_samples=args.n_samples
+    )
+
+    # ============================================================
+    # Split TrainVal / Test (Test is held-out permanently)
+    # ============================================================
+    # X_trainval, X_test, y_trainval, y_test = split_test_data(X_raw, y_raw)
+    # logging.info(f"TrainVal size = {X_trainval.shape[0]:,}")
+    # logging.info(f"Test size     = {X_test.shape[0]:,}")
+
+    # ============================================================
+    # Define search space
+    # ============================================================
+    if args.model == "mlp":
+        search_space = {
+            "hidden_dim": [64, 128, 256],
+            "num_layers": [2, 3, 4],
+            "dropout": [0.2, 0.3],
+            "learning_rate": [1e-3, 5e-4]
+        }
+
+    elif args.model == "residual_mlp":
+        search_space = {
+            "hidden_dim": [64, 128, 256],
+            "num_layers": [2, 3],
+            "dropout": [0.2, 0.3],
+            "learning_rate": [1e-3, 5e-4]
+        }
+
+    elif args.model == "transformer":
+        search_space = {
+            "d_model": [64, 128],
+            "num_heads": [4, 8],
+            "dropout": [0.1, 0.2],
+            "learning_rate": [1e-3, 5e-4]
+        }
+
+    # ============================================================
+    # Hyperparameter search via K-Fold CV
+    # ============================================================
+    best_params, best_rmse = hyperparameter_search(
+        X=X_raw,
+        y=y_raw,
+        model_type=args.model,
+        search_space=search_space,
+        k=args.kfolds
+    )
+
+    logging.info("\n================ BEST RESULT ================")
+    logging.info(f"Model:          {args.model}")
+    logging.info(f"Best Params:    {best_params}")
+    logging.info(f"Best CV RMSE:   {best_rmse:.4f}")
+    logging.info("================================================")
+
+    # Save best params
+    best_json = os.path.join(args.output, f"best_params_{args.model}.json")
+    with open(best_json, "w") as f:
+        json.dump({
+            "model": args.model,
+            "best_params": best_params,
+            "best_cv_rmse": best_rmse
+        }, f, indent=4)
+    logging.info(f"Saved best hyperparameters to: {best_json}")
+
+# ============================================================
+if __name__ == "__main__":
+    main()
+
