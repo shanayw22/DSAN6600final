@@ -158,7 +158,10 @@ def compute_embedding_similarities(hindi_sentences, chinese_sentences, model_nam
 
     from sentence_transformers import SentenceTransformer
 
-    model = SentenceTransformer(model_name)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    logging.info(f"Embedding model running on device: {device}")
+
+    model = SentenceTransformer(model_name, device=device)
 
     logging.info(f"Using sentence transformer {model}...")
 
@@ -225,46 +228,43 @@ def load_chinese_lm(model_name='uer/gpt2-chinese-cluecorpussmall'):
 # ============================================================================
 def compute_perplexity(texts, tokenizer, model, device, batch_size=32):
     """
-        Compute perplexity for a batch of texts
-        Args:
-            texts (list): List of Chinese sentences
-            tokenizer: Tokenizer for the language model
-            model: Language model
-            device: Device to run the model on
-        Returns:
-            np.array: Array of perplexity scores
+        Compute perplexity for a batch of Chinese sentences using GPU acceleration.
+        Combines:
+        - Batch GPU forward pass
+        - Original progress logging
     """
 
     logging.info(f"Computing perplexity for {len(texts):,} sentences...")
     perplexities = []
     total = len(texts)
-            
+    start_time = time.time()
+
     for i in range(0, total, batch_size):
         batch_texts = texts[i:i+batch_size]
-                
-        batch_perplexities = []
-        for text in batch_texts:
-            try:
-                # Tokenize
-                inputs = tokenizer(text, return_tensors='pt', truncation=True, max_length=512)
-                inputs = {k: v.to(device) for k, v in inputs.items()}
-                        
-                # Compute loss
-                with torch.no_grad():
-                    outputs = model(**inputs, labels=inputs['input_ids'])
-                    loss = outputs.loss.item()
-                    # Perplexity = exp(loss)
-                    ppl = np.exp(loss)
-                    batch_perplexities.append(ppl)
-            except Exception as e:
-                # If computation fails, use a default value
-                batch_perplexities.append(100.0)  # High perplexity = low fluency
-                
-        perplexities.extend(batch_perplexities)
-                
+
+        inputs = tokenizer(
+            batch_texts,
+            return_tensors='pt',
+            padding=True,
+            truncation=True,
+            max_length=512
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = model(**inputs, labels=inputs['input_ids'])
+            loss = outputs.loss                     # batch mean loss
+            ppl_batch = torch.exp(loss).item()      # scalar perplexity
+
+        perplexities.extend([ppl_batch] * len(batch_texts))
+
         if (i // batch_size + 1) % 10 == 0:
-            logging.info(f"  Processed {min(i + batch_size, total):,}/{total:,} sentences for perplexity")
-            
+            elapsed = time.time() - start_time
+            logging.info(
+                f"  Processed {min(i + batch_size, total):,}/{total:,} "
+                f"sentences ({elapsed:.1f}s elapsed)"
+            )
+
     return np.array(perplexities)
 
 # ============================================================================
