@@ -104,7 +104,7 @@ else:
 # Configuration
 # ============================================================================
 DATA_PATH = '../data/hi-zh.txt/'
-SAMPLE_SIZE = 1000
+SAMPLE_SIZE = 100000
 OUTPUT_DIR = '../models/'
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
