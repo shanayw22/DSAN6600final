@@ -54,6 +54,7 @@ def load_tabular_dataset(csv_path: str, test_ratio: float =0.1):
         X (np.ndarray): feature matrix
         y (np.ndarray): target array
         test_df (pd.DataFrame): test dataset saved separately
+        trainval_df (pd.DataFrame): train+val dataset
     """
 
     logging.info(f"Loading feature-engineered CSV: {csv_path}")
@@ -74,7 +75,7 @@ def load_tabular_dataset(csv_path: str, test_ratio: float =0.1):
 
     logging.info(f"Loaded {X.shape[0]:,} samples with {X.shape[1]} features.")
 
-    return X, y, test_df
+    return X, y, test_df, trainval_df
 
 # ============================================================
 # K-Fold Cross Validation
@@ -219,7 +220,7 @@ def main():
     # Load dataset
     # ============================================================
     logging.info("Loading dataset...")
-    X_raw, y_raw, test_df = load_tabular_dataset(
+    X_raw, y_raw, test_df, trainval_df = load_tabular_dataset(
         csv_path=args.csv,
         test_ratio=args.test_ratio,
     )
@@ -230,7 +231,10 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     test_csv_path = os.path.join(OUTPUT_DIR, "test_dataset.csv")
     test_df.to_csv(test_csv_path, index=False)
+    trainval_csv_path = os.path.join(OUTPUT_DIR, "trainval_dataset.csv")
+    trainval_df.to_csv(trainval_csv_path, index=False)
     logging.info(f"Saved test dataset to: {test_csv_path}")
+    logging.info(f"Saved train+val dataset to: {trainval_csv_path}")
 
     # ============================================================
     # Define search space
