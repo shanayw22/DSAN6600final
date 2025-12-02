@@ -26,14 +26,19 @@ import pandas as pd
 import warnings
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
-from sklearn.metrics import r2_score
-from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 from v2_models import get_model_builder
+import tensorflow as tf
 
 # Set up logging and warnings
 logging.basicConfig(level=logging.INFO)
 warnings.filterwarnings('ignore')
+
+
+# ============================================================
+# Configuration
+# ============================================================
+OUTPUT_DIR = '../../V2_FE_Output/'
 
 # ============================================================
 # Load csv file
@@ -66,32 +71,6 @@ def load_tabular_dataset(csv_path: str, sample: bool, n_samples: int = 1000000):
     logging.info(f"Loaded {X.shape[0]:,} samples with {X.shape[1]} features.")
 
     return X, y
-
-# ============================================================
-# Split train / test
-# ============================================================
-# def split_test_data(X, y, test_size=0.2, random_state=42):
-#     """
-#     Split dataset into train and test sets.
-
-#     Args:
-#         X (np.ndarray): feature matrix
-#         y (np.ndarray): target array
-#         test_size (float): proportion for test set
-#         random_state (int): random seed
-#     Returns:
-#         X_train, X_test, y_train, y_test
-#     """
-
-#     logging.info(f"Splitting data into train/test with test_size={test_size}...")
-
-#     X_train, X_test, y_train, y_test = train_test_split(
-#         X, y, test_size=test_size, random_state=random_state
-#     )
-
-#     logging.info(f"Train samples: {X_train.shape[0]:,}, Test samples: {X_test.shape[0]:,}")
-
-#     return X_train, X_test, y_train, y_test
 
 # ============================================================
 # K-Fold Cross Validation
@@ -129,12 +108,21 @@ def run_kfold_cv(X, y, model_fn, hyperparams, k=5, random_state=42):
         input_dim = X_train.shape[1]
         model = model_fn(input_dim=input_dim, **hyperparams)
 
+
         # Train
+        early_stop = tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss',
+            patience=5,
+            restore_best_weights=True,
+            min_delta=1e-4
+        )
+
         model.fit(
             X_train_scaled, y_train_scaled,
-            epochs=40,
+            epochs=100,
             batch_size=128,
             validation_data=(X_val_scaled, y_val_scaled),
+            callbacks=[early_stop],
             verbose=0
         )
 
@@ -188,7 +176,7 @@ def hyperparameter_search(X, y, model_type, search_space, k=5):
         logging.info(f"\nEvaluating params: {params}")
 
         # Wrap model_fn to inject input_dim automatically
-        model_fn = lambda input_dim=input_dim, **hp: raw_model_fn(input_dim, **hp)
+        model_fn = lambda input_dim=input_dim, **hp: raw_model_fn(input_dim, **params)
 
         avg_rmse, _ = run_kfold_cv(
             X=X,
@@ -205,43 +193,6 @@ def hyperparameter_search(X, y, model_type, search_space, k=5):
 
     return best_params, best_score
 
-# ============================================================
-# test dataset evaluation for optimal hyperparameters
-# ============================================================
-def evaluate_on_test_data(X_test, y_test, model, feature_scaler, target_scaler=None):
-    """
-    Evaluate the trained final model on the test dataset.
-    
-    IMPORTANT:
-    - feature_scaler must come from TrainVal
-    - target_scaler must come from TrainVal (if used)
-    """
-
-    logging.info("Evaluating on test dataset...")
-
-    # Scale test data using TRAINED scalers
-    X_test_scaled = feature_scaler.transform(X_test)
-
-    # Predict (scaled)
-    test_pred_scaled = model.predict(X_test_scaled).reshape(-1)
-
-    # Unscale predictions if target was scaled
-    if target_scaler is not None:
-        test_pred = target_scaler.inverse_transform(
-            test_pred_scaled.reshape(-1, 1)
-        ).flatten()
-    else:
-        test_pred = test_pred_scaled
-
-    # Compute metrics in ORIGINAL scale
-    rmse = np.sqrt(mean_squared_error(y_test, test_pred))
-    mae = mean_absolute_error(y_test, test_pred)
-    r2 = r2_score(y_test, test_pred)
-
-    logging.info(f"Test RMSE={rmse:.4f}, MAE={mae:.4f}, R²={r2:.4f}")
-
-    return rmse, mae, r2
-
 
 # ============================================================
 # main
@@ -253,10 +204,8 @@ def main():
     parser.add_argument("--sample", action="store_true", help="Use sampling to speed up CV")
     parser.add_argument("--n_samples", type=int, default=1000000, help="If sampling, number of rows to sample")
     parser.add_argument("--kfolds", type=int, default=5, help="Number of CV folds")
-    parser.add_argument("--output", type=str, default="cv_results", help="Directory to save CV and test results")
     args = parser.parse_args()
-    os.makedirs(args.output, exist_ok=True)
-
+  
     # ============================================================
     # Load dataset
     # ============================================================
@@ -266,13 +215,6 @@ def main():
         sample=args.sample,
         n_samples=args.n_samples
     )
-
-    # ============================================================
-    # Split TrainVal / Test (Test is held-out permanently)
-    # ============================================================
-    # X_trainval, X_test, y_trainval, y_test = split_test_data(X_raw, y_raw)
-    # logging.info(f"TrainVal size = {X_trainval.shape[0]:,}")
-    # logging.info(f"Test size     = {X_test.shape[0]:,}")
 
     # ============================================================
     # Define search space
@@ -319,7 +261,7 @@ def main():
     logging.info("================================================")
 
     # Save best params
-    best_json = os.path.join(args.output, f"best_params_{args.model}.json")
+    best_json = os.path.join(OUTPUT_DIR, f"best_params_{args.model}.json")
     with open(best_json, "w") as f:
         json.dump({
             "model": args.model,

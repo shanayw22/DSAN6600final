@@ -226,7 +226,7 @@ def load_chinese_lm(model_name='uer/gpt2-chinese-cluecorpussmall'):
 # ============================================================================
 # Chinese Language Model Perplexity Computation
 # ============================================================================
-def compute_perplexity(texts, tokenizer, model, device, batch_size=32):
+def compute_perplexity(texts, tokenizer, model, device, batch_size=8):
     """
         Compute perplexity for a batch of Chinese sentences using GPU acceleration.
         Combines:
@@ -247,7 +247,7 @@ def compute_perplexity(texts, tokenizer, model, device, batch_size=32):
             return_tensors='pt',
             padding=True,
             truncation=True,
-            max_length=512
+            max_length=256
         )
         inputs = {k: v.to(device) for k, v in inputs.items()}
 
@@ -257,6 +257,10 @@ def compute_perplexity(texts, tokenizer, model, device, batch_size=32):
             ppl_batch = torch.exp(loss).item()      # scalar perplexity
 
         perplexities.extend([ppl_batch] * len(batch_texts))
+
+        if device == "mps" and (i % 1000 == 0) and i > 0:
+            torch.mps.empty_cache()
+            logging.info("    [MPS] Cleared cache to prevent memory fragmentation")
 
         if (i // batch_size + 1) % 10 == 0:
             elapsed = time.time() - start_time
