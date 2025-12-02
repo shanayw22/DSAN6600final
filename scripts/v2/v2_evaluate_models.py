@@ -6,7 +6,7 @@ Evaluate three final trained models on 50 FE rows.
 Steps:
   1. Load FE dataset (10000 rows)
   2. Load saved models + scalers
-  3. Predict and compute RMSE/MAE
+  3. Predict and compute RMSE/MAE/R²
   4. Output CSV (all predictions) + metrics JSON
 =========================================================
 """
@@ -20,11 +20,15 @@ import warnings
 import numpy as np
 import pandas as pd
 import tensorflow as tf
-from sklearn.metrics import mean_squared_error, mean_absolute_error
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
 
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 
+# ============================================================================
+# Confugiration
+# ============================================================================
+OUTPUT_DIR = '../v2/V2_Evaluate_Result/'
 
 # ============================================================
 # Load FE dataset
@@ -80,8 +84,13 @@ def main():
     parser = argparse.ArgumentParser(description="Evaluate final trained models with FE dataset")
     parser.add_argument("--csv", required=True, help="Feature-engineered CSV file")
     parser.add_argument("--model_root", required=True, help="Directory storing mlp/residual/transformer folders")
-    parser.add_argument("--output", default="eval_results.csv")
     args = parser.parse_args()
+
+    # Ensure output directory exists
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+    # Output CSV file
+    output_csv = os.path.join(OUTPUT_DIR, "eval_results.csv")
 
     # Load dataset
     X, y, df, feature_cols = load_dataset(args.csv)
@@ -105,24 +114,26 @@ def main():
         # Compute metrics
         rmse = np.sqrt(mean_squared_error(y, preds))
         mae = mean_absolute_error(y, preds)
+        r_2 = r2_score(y, preds)
 
-        metrics_summary[m] = {"rmse": rmse, "mae": mae}
+        metrics_summary[m] = {"rmse": rmse, "mae": mae, "r2": r_2}
 
         logging.info(f"\n====== {m} ======")
         logging.info(f"RMSE = {rmse:.6f}")
         logging.info(f"MAE  = {mae:.6f}")
+        logging.info(f"R²   = {r_2:.6f}")
 
 
     # Save all columns (all model predictions)
-    df.to_csv(args.output, index=False)
-    logging.info(f"\nSaved evaluation results → {args.output}")
+    df.to_csv(output_csv, index=False)
+    logging.info(f"\nSaved evaluation results → {output_csv}")
 
     # Save metrics JSON
-    metrics_path = args.output.replace(".csv", "_metrics.json")
-    with open(metrics_path, "w") as f:
+    metrics_json = os.path.join(OUTPUT_DIR, "eval_results_metrics.json")
+    with open(metrics_json, "w") as f:
         json.dump(metrics_summary, f, indent=4)
 
-    logging.info(f"Saved metrics summary → {metrics_path}")
+    logging.info(f"Saved metrics summary → {metrics_json}")
 
 
 if __name__ == "__main__":

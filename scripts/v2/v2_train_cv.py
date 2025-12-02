@@ -24,6 +24,7 @@ import logging
 import numpy as np
 import pandas as pd
 import warnings
+from functools import partial
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
@@ -38,39 +39,42 @@ warnings.filterwarnings('ignore')
 # ============================================================
 # Configuration
 # ============================================================
-OUTPUT_DIR = '../../V2_FE_Output/'
+OUTPUT_DIR = '../v2/V2_CV_Output/'
 
 # ============================================================
 # Load csv file
 # ============================================================
-def load_tabular_dataset(csv_path: str, sample: bool, n_samples: int = 1000000):
+def load_tabular_dataset(csv_path: str, test_ratio: float =0.1):
     """
     Load feature-engineered tabular dataset from CSV.
     Args:
         csv_path (str): path to feature-engineered
-        sample (bool): whether to sample a subset for quicker runs
-        n_samples (int): number of samples if sampling
+        test_ratio (float): fraction of data to reserve for test set
     Returns:
         X (np.ndarray): feature matrix
         y (np.ndarray): target array
+        test_df (pd.DataFrame): test dataset saved separately
     """
 
     logging.info(f"Loading feature-engineered CSV: {csv_path}")
 
     df = pd.read_csv(csv_path)
+    
+    logging.info("Split and saving test dataset with fraction of 10%...")
+    df = df.sample(frac=1.0, random_state=42).reset_index(drop=True)
 
-    if sample:
-        logging.info(f"Sampling {n_samples} rows for quicker runs...")
-        df = df.sample(n=n_samples, random_state=42).reset_index(drop=True)
+    test_size = int(len(df) * test_ratio)
+    test_df = df.iloc[:test_size].copy()
+    trainval_df = df.iloc[test_size:].copy()
 
     feature_cols = [col for col in df.columns if col != "ccmatrix_score"]
 
-    X = df[feature_cols].values
-    y = df["ccmatrix_score"].values
+    X = trainval_df[feature_cols].values
+    y = trainval_df["ccmatrix_score"].values
 
     logging.info(f"Loaded {X.shape[0]:,} samples with {X.shape[1]} features.")
 
-    return X, y
+    return X, y, test_df
 
 # ============================================================
 # K-Fold Cross Validation
@@ -105,9 +109,15 @@ def run_kfold_cv(X, y, model_fn, hyperparams, k=5, random_state=42):
         y_val_scaled = target_scaler.transform(y_val.reshape(-1, 1)).flatten()
     
         # Build model for this fold
-        input_dim = X_train.shape[1]
-        model = model_fn(input_dim=input_dim, **hyperparams)
+        model = model_fn()
 
+        # Print Model Structure & Params
+        logging.info(f"[Model Built for Fold {fold_idx+1}] Hyperparameters: {hyperparams}")
+
+        try:
+            model.summary(print_fn=lambda x: logging.info(x))
+        except Exception as e:
+            logging.info(f"(Model summary unavailable: {e})")
 
         # Train
         early_stop = tf.keras.callbacks.EarlyStopping(
@@ -176,7 +186,7 @@ def hyperparameter_search(X, y, model_type, search_space, k=5):
         logging.info(f"\nEvaluating params: {params}")
 
         # Wrap model_fn to inject input_dim automatically
-        model_fn = lambda input_dim=input_dim, **hp: raw_model_fn(input_dim, **params)
+        model_fn = partial(raw_model_fn, input_dim=input_dim, **params)
 
         avg_rmse, _ = run_kfold_cv(
             X=X,
@@ -200,9 +210,8 @@ def hyperparameter_search(X, y, model_type, search_space, k=5):
 def main():
     parser = argparse.ArgumentParser(description="Run K-Fold CV for TQE models")
     parser.add_argument("--csv", type=str, required=True, help="Path to feature-engineered CSV file")
+    parser.add_argument("--test_ratio", type=float, default=0.1, help="Fraction of data to reserve for test set")
     parser.add_argument("--model", type=str, default="mlp", choices=["mlp", "residual_mlp", "transformer"], help="Which model type to evaluate")
-    parser.add_argument("--sample", action="store_true", help="Use sampling to speed up CV")
-    parser.add_argument("--n_samples", type=int, default=1000000, help="If sampling, number of rows to sample")
     parser.add_argument("--kfolds", type=int, default=5, help="Number of CV folds")
     args = parser.parse_args()
   
@@ -210,11 +219,18 @@ def main():
     # Load dataset
     # ============================================================
     logging.info("Loading dataset...")
-    X_raw, y_raw = load_tabular_dataset(
+    X_raw, y_raw, test_df = load_tabular_dataset(
         csv_path=args.csv,
-        sample=args.sample,
-        n_samples=args.n_samples
+        test_ratio=args.test_ratio,
     )
+
+    # ============================================================
+    # save test dataset
+    # ============================================================
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    test_csv_path = os.path.join(OUTPUT_DIR, "test_dataset.csv")
+    test_df.to_csv(test_csv_path, index=False)
+    logging.info(f"Saved test dataset to: {test_csv_path}")
 
     # ============================================================
     # Define search space

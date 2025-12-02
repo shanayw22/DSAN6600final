@@ -31,6 +31,10 @@ import matplotlib.pyplot as plt
 warnings.filterwarnings("ignore")
 logging.basicConfig(level=logging.INFO)
 
+# ============================================================================
+# Confugiration
+# ============================================================================
+OUTPUT_DIR = '../v2/V2_Shap_Result/'
 
 # -----------------------------------------------------------
 # Load feature-engineered CSV + sample
@@ -134,10 +138,10 @@ def main():
     parser.add_argument("--model_root", required=True, help="Folder containing mlp/residual_mlp/transformer folders")
     parser.add_argument("--model", required=True, choices=["mlp", "residual_mlp", "transformer"])
     parser.add_argument("--sample_n", type=int, default=200, help="Rows to compute SHAP on")
-    parser.add_argument("--output", default="./shap_output")
     args = parser.parse_args()
 
-    os.makedirs(args.output, exist_ok=True)
+    # Ensure output directory exists
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # 1. Load FE dataset
     df, X, y, feature_cols = load_fe_dataset(args.csv, args.sample_n)
@@ -154,7 +158,7 @@ def main():
         model=model,
         X_scaled=X_scaled,
         feature_names=feature_cols,
-        output_dir=args.output,
+        output_dir=OUTPUT_DIR,
         model_name=args.model
     )
 

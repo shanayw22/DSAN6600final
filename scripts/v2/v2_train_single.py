@@ -33,6 +33,11 @@ from v2_models import get_model_builder
 logging.basicConfig(level=logging.INFO)
 warnings.filterwarnings('ignore')
 
+# ============================================================================
+# Confugiration
+# ============================================================================
+OUTPUT_DIR = '../v2/V2_Final_Models/'
+
 
 # ============================================================
 # Load dataset
@@ -134,11 +139,10 @@ def load_best_params(json_path):
 def main():
     parser = argparse.ArgumentParser(description="Train final TQE models")
     parser.add_argument("--csv", required=True, help="Path to feature-engineered CSV")
-    parser.add_argument("--params_dir", required=True, help="Directory with best_params JSON files")
-    parser.add_argument("--output", default="final_models", help="Directory to save final models")
     args = parser.parse_args()
 
-    os.makedirs(args.output, exist_ok=True)
+    # Ensure output directory exists
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Load dataset
     X, y = load_dataset(args.csv)
@@ -147,12 +151,11 @@ def main():
     model_types = ["mlp", "residual_mlp", "transformer"]
 
     for m in model_types:
-        json_path = os.path.join(args.params_dir, f"best_params_{m}.json")
+        json_path = os.path.join(OUTPUT_DIR, f"best_params_{m}.json")
         logging.info(f"\nLoading best params: {json_path}")
 
         params = load_best_params(json_path)
-        train_final_model(m, params, X, y, args.output)
-
+        train_final_model(m, params, X, y, OUTPUT_DIR)
 
 if __name__ == "__main__":
     main()

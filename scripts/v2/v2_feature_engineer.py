@@ -92,7 +92,7 @@ feature_columns = [
 ]
 
 DATA_PATH = '../../data/hi-zh.txt/'
-OUTPUT_DIR = '../../V2_FE_Output/'
+OUTPUT_DIR = '../v2/V2_FE_Output/'
 
 # ============================================================================
 # Load Data
