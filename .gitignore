@@ -66,4 +66,4 @@ Thumbs.db
 .env.local
 
 # Ignore all folders starting with V2_
-scripts/v2/V2_*/
+scripts/v2/V2_*
