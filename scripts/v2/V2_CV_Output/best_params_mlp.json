@@ -1,0 +1,10 @@
+{
+    "model": "mlp",
+    "best_params": {
+        "hidden_dim": 256,
+        "num_layers": 3,
+        "dropout": 0.2,
+        "learning_rate": 0.0005
+    },
+    "best_cv_rmse": 0.014213519318546327
+}

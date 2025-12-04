@@ -1,0 +1,10 @@
+{
+    "model": "transformer",
+    "best_params": {
+        "d_model": 64,
+        "num_heads": 8,
+        "dropout": 0.1,
+        "learning_rate": 0.0005
+    },
+    "best_cv_rmse": 0.014255240259848473
+}

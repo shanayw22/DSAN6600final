@@ -37,7 +37,7 @@ warnings.filterwarnings('ignore')
 # Confugiration
 # ============================================================================
 OUTPUT_DIR = '../v2/V2_Final_Models/'
-
+PARAM_DIR = '../v2/V2_CV_Output/'
 
 # ============================================================
 # Load dataset
@@ -151,7 +151,7 @@ def main():
     model_types = ["mlp", "residual_mlp", "transformer"]
 
     for m in model_types:
-        json_path = os.path.join(OUTPUT_DIR, f"best_params_{m}.json")
+        json_path = os.path.join(PARAM_DIR, f"best_params_{m}.json")
         logging.info(f"\nLoading best params: {json_path}")
 
         params = load_best_params(json_path)
