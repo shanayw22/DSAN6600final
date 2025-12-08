@@ -17,7 +17,6 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from scipy.stats import spearmanr, pearsonr
 from sklearn.preprocessing import StandardScaler
-from sentence_transformers import SentenceTransformer as ST
 import warnings
 warnings.filterwarnings('ignore')
 
