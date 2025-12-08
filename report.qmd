@@ -14,6 +14,7 @@ format:
     fig-height: 6
     fig-dpi: 300
 bibliography: references.bib
+embed-resources: true
 ---
 
 ::: {.callout-note}
@@ -164,6 +165,60 @@ The training script incorporates several GPU optimizations to maximize computati
 
 Models are evaluated using multiple metrics to provide comprehensive performance assessment. Mean Absolute Error (MAE) measures average prediction error and is the primary metric for model selection. Root Mean Squared Error (RMSE) penalizes larger errors more heavily than smaller errors. The coefficient of determination (R²) measures the proportion of variance in the target variable explained by the model. Pearson correlation measures linear relationship strength between predictions and actual scores. Spearman correlation measures monotonic relationship strength using rank-based correlation, which is less sensitive to outliers than Pearson correlation.
 
+### Cross Validation(800k)
+
+To identify the best-performing architecture and hyperparameters at the 800k scale, we performed a structured hyperparameter search combined with 5-fold cross-validation. Three model families were evaluated: MLP, Residual MLP, and Transformer. Each model was trained and validated using identical folds to ensure fair comparison.
+
+| Model                              | Hyperparameters                |
+| ---------------------------------- | ------------------------------ |
+| **MLP**                            | Hidden Dim: **[64, 128, 256]** |
+| Num Layers: **[2, 3, 4]**          |                                |
+| Dropout: **[0.2, 0.3]**            |                                |
+| Learning Rate: **[0.001, 0.0005]** |                                |
+| **Residual MLP**                   | Hidden Dim: **[64, 128, 256]** |
+| Num Layers: **[2, 3]**             |                                |
+| Dropout: **[0.2, 0.3]**            |                                |
+| Learning Rate: **[0.001, 0.0005]** |                                |
+| **Transformer**                    | Model Dim: **[64, 128]**       |
+| Num Heads: **[4, 8]**              |                                |
+| Dropout: **[0.1, 0.2]**            |                                |
+| Learning Rate: **[0.001, 0.0005]** |                                |
+
+The search explored model capacity, depth, regularization strength, and optimization rates.
+Best configurations were selected using lowest mean CV RMSE.
+
+### Cross-Validation Results (Best Hyperparameters)
+
+| Model        | Best Hyperparameters                                              | Best CV RMSE |
+|--------------|-------------------------------------------------------------------|--------------|
+| **MLP**         | Hidden Dim **256**, Layers **3**, Dropout **0.2**, LR **0.0005**          | **0.01421351** |
+| **Residual MLP** | Hidden Dim **256**, Layers **3**, Dropout **0.2**, LR **0.0005**          | **0.01421057** |
+| **Transformer**  | Model Dim **64**, Heads **8**, Dropout **0.1**, LR **0.0005**             | **0.01425524** |
+
+Residual MLP achieved the best average CV performance, though all architectures performed similarly within a narrow RMSE range.
+
+### Final Test-Set Performance
+
+Using the best hyperparameters from CV, final models were retrained on the full training data and evaluated on a held-out test set.
+
+| Model          | RMSE        | MAE        | R²        |
+|----------------|-------------|------------|-----------|
+| **MLP**          | **0.014317** | **0.009913** | **0.154002** |
+| **Residual MLP** | **0.014277** | **0.009913** | **0.158780** |
+| **Transformer**  | **0.014353** | **0.009926** | **0.149814** |
+
+Across all metrics, the **Residual MLP** delivered the strongest generalization performance, achieving the highest R² and lowest RMSE on the test set.
+
+### Summary
+
+Cross-validation demonstrated that:
+
+- All three architectures perform competitively on the engineered feature set.
+- The **Residual MLP** provided the best combination of stability and accuracy.
+- Hyperparameter tuning (especially model depth, width, and dropout) significantly impacts performance at the 800k data scale.
+
+This CV stage establishes the foundation for selecting the final model configuration used in downstream evaluation and SHAP interpretability analysis.
+
 # Analyses
 
 ## Data Exploration
@@ -242,7 +297,7 @@ except FileNotFoundError:
     print("Training results not found. Please run train_model.py first to generate results.")
 ```
 
-## Model Performance Comparison
+## Model Performance Comparison(100k)
 
 ```{python}
 #| echo: true
@@ -353,46 +408,51 @@ except NameError:
     print("Results not loaded. Please run the previous code chunks first.")
 ```
 
-## Feature Importance Analysis
+## Feature Importance Analysis(SHAP 800K)
 
-```{python}
-#| echo: true
-#| warning: false
-#| fig-cap: "Note: Feature importance analysis would require additional computation"
-#| fig-width: 10
-#| fig-height: 6
+### Key Findings
 
-print("Feature Importance Analysis:")
-print("=" * 70)
-print("\nNeural network models (MLP, Deep MLP, Residual MLP, Transformer) learn")
-print("distributed representations across all features, making direct feature")
-print("importance extraction challenging.")
-print("\nTo analyze feature importance, consider:")
-print("  1. Permutation importance: Shuffle each feature and measure performance drop")
-print("  2. SHAP values: Compute Shapley Additive Explanations")
-print("  3. Gradient-based methods: Analyze gradients w.r.t. input features")
-print("  4. Ablation studies: Remove feature categories and measure impact")
-```
+::: {layout-ncol=3}
 
-## Error Analysis
+![](scripts/v2/V2_Shap_Result/shap_bar_mlp.png){fig-alt="MLP SHAP bar plot" width="100%"}
 
-```{python}
-#| echo: true
-#| warning: false
-#| fig-cap: "Error distribution analysis (placeholder - requires prediction data)"
+![](scripts/v2/V2_Shap_Result/shap_bar_residual_mlp.png){fig-alt="Residual MLP SHAP bar plot" width="100%"}
 
-print("Error Analysis:")
-print("=" * 70)
-print("\nTo perform detailed error analysis, we would need:")
-print("  1. Test set predictions from the best model")
-print("  2. Actual CCMatrix scores")
-print("  3. Sentence pairs for qualitative analysis")
-print("\nThis would allow us to:")
-print("  - Identify high-error cases")
-print("  - Analyze error patterns (over/under-prediction)")
-print("  - Examine sentence characteristics of misclassified pairs")
-print("  - Generate scatter plots: predicted vs. actual scores")
-```
+![](scripts/v2/V2_Shap_Result/shap_bar_transformer.png){fig-alt="Transformer SHAP bar plot" width="100%"}
+
+:::
+
+::: {layout-ncol=3}
+
+![](scripts/v2/V2_Shap_Result/shap_summary_mlp.png){fig-alt="MLP SHAP summary" width="100%"}
+
+![](scripts/v2/V2_Shap_Result/shap_summary_residual_mlp.png){fig-alt="Residual MLP SHAP summary" width="100%"}
+
+![](scripts/v2/V2_Shap_Result/shap_summary_transformer.png){fig-alt="Transformer SHAP summary" width="100%"}
+
+:::
+
+- **Semantic interaction features dominate across all models.**  
+  `embedding_labse_interaction` and `labse_similarity` consistently appear as the top contributors, confirming that semantic alignment between Hindi and Chinese sentences is the strongest predictor of CCMatrix scores.
+
+- **Character-based length indicators also play a major role.**  
+  Features such as `chinese_char_count`, `hindi_length`, and `chinese_length` rank highly, indicating that proportional sentence length remains a strong signal of translation quality.
+
+- **Residual MLP demonstrates more stable feature importance ordering.**  
+  Its SHAP rankings show less fluctuation compared to MLP and Transformer, highlighting the stabilizing effect of residual connections.
+
+- **Transformer relies more heavily on pure semantic similarity.**  
+  For the Transformer, `labse_similarity` alone contributes more than any interaction term, reflecting its stronger capacity to capture high-level semantic relationships.
+
+- **Statistical features contribute moderately but consistently.**  
+  Features such as punctuation ratios, vocabulary diversity, and digit counts rank mid-to-low, suggesting they complement semantic indicators rather than drive predictions.
+
+### Interpretation
+
+Across models, semantic similarity remains the most influential feature category, followed by length-based alignment and statistical diagnostics.  
+Residual MLP offers the most balanced pattern of attribution, supporting its superior generalization performance observed in evaluation metrics.
+
+The SHAP analysis confirms that the engineered feature set captures meaningful structure in translation quality, and the model behaviors align with linguistic intuition.
 
 # Discussion
 
